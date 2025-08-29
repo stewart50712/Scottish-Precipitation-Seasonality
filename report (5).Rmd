@@ -1,0 +1,284 @@
+---
+title: "StatComp Project 2: Scottish weather"
+author: "Stewart Ross (s2078228)"
+output:
+  html_document:
+    number_sections: no
+  pdf_document:
+    number_sections: no
+header-includes:
+  - \newcommand{\bm}[1]{\boldsymbol{#1}}
+  - \newcommand{\mat}[1]{\begin{bmatrix}#1\end{bmatrix}}
+---
+
+```{r setup, include = FALSE}
+# Modify this setup code chunk to set options
+# or add extra packages etc if needed.
+# See the project instructions for more details
+# on what code to show, and where/how.
+
+# Set default code chunk options
+knitr::opts_chunk$set(
+  echo = TRUE,
+  eval = TRUE
+)
+
+suppressPackageStartupMessages(library(tidyverse))
+theme_set(theme_bw())
+suppressPackageStartupMessages(library(StatCompLab))
+suppressPackageStartupMessages(library(dbplyr))
+# To give the same random number sequence every time the document is knit:ed,
+# making it easier to discuss the specific numbers in the text:
+set.seed(12345L)
+```
+
+```{r code=readLines("functions.R"), eval=TRUE, echo=FALSE}
+# Do not change this code chunk
+# Load function definitions
+source("functions.R")
+```
+# Introduction
+ 
+The aim of this report is to explore data collected by the Global Historical Climatology Network for eight weather stations in Scotland, spanning a time period from 1960 to 2018. The data includes information about each weather station such as latitude, longitude and elevation, as well as the precipitation and maximum and minimum temperature values for select years during this period. Unfortunately, some of the collected data is incomplete such as missing precipitation values, which is explored later on in the report. 
+
+# Seasonal variability
+
+### General analysis 
+In order to view the station data and the recorded measurements in one data frame, the following code was used to create the new variable `ghcnds`, such as in Lab 07. In addition to this, the column `Season` was added to show if a particular measurement was taken in summer or winter, with summer being the months between April and September and winter the remainder of the year. We also add a seperate column `summer`to display a TRUE statement if a measurement was taken in summer and a FALSE statement if it was taken in winter. 
+
+```{r echo=TRUE}
+ghcnds <- left_join(ghcnd_values, ghcnd_stations, by = "ID") %>%
+  mutate(Season = ifelse(Month %in% c(1, 2, 3, 10, 11, 12),"Winter","Summer"))
+ghcnds <- ghcnds %>%
+  mutate(Summer = Month %in% c(4, 5, 6, 7, 8, 9))
+```
+
+The following figure shows the temperature and precipitation data in 2010, with each subplot showing the results for a different station. The data is averaged by month for readability.  
+
+```{r echo=FALSE}
+yearly_data <- ghcnds %>%
+  filter(Year == 2010) %>%
+  filter(Element %in% c("TMIN", "TMAX", "PRCP")) %>%
+  group_by(ID, Name, Element, Month) %>%
+  summarise(Value = mean(Value), .groups = "drop") %>%
+  ggplot(aes(x = Month, y = Value)) +
+  geom_point(aes(color = Element)) +
+  facet_wrap(~Name, scales = "free") +
+  labs(
+    title = ("Temperature and Precipitation Data for 2010"),
+    x = "Month",
+    y = "Value",
+    color = "Element"
+  ) +
+  scale_x_continuous(limits = c(1, 12), breaks = seq(1, 12, 1)) +
+  theme(panel.spacing = unit(1.5, "lines"))
+print(yearly_data)
+```
+
+From the plots above, it can be seen that in 2010 each weather station saw higher maximum and minimum temperatures in the summer months, peaking around July. However, we see that there is generally very little difference in precipitation values between summer and winter, with the notable exception of Benmore: Younger Botanic Gardens and Ardtalnaig, where there is significantly more rain in winter. The average maximum and minimum temperature and precipitation values across all stations and time periods are given in the following table:   
+
+```{r echo=FALSE}
+all_avg_data <- ghcnds %>%
+  filter(Element %in% c("TMIN", "TMAX", "PRCP")) %>%
+  group_by(ID, Name, Element, Season) %>%
+  summarise(Station_Value = mean(Value), .groups = "drop") %>%
+  group_by(Element, Season) %>%
+  summarise(Average = mean(Station_Value), .groups = "drop")
+knitr::kable(as.data.frame(all_avg_data))
+```
+
+It can be seen that across all stations and time periods there is on average 40% more rain in winter than summer, and that the maximum and minimum temperatures in summer are around 100% and 400% greater respectively. 
+
+### Monte Carlo Permutation Test Approximated P-Values
+
+A Monte Carlo Permutation test is a way of testing a null hypothesis by means of random permutations. We first assume the null hypothesis to be true, in this case that rainfall distribution is the same in winter as in summer, and are looking for evidence to reject this in favour of the alternative hypothesis, that the distributions have different expected values. We set a number of random permutations to be tested, in this case 1000, and permute the values of precipitation in the original data frame. For each permutation, the value of the permuted test statistic $T_{perm}$= |permuted winter average − permuted summer average| is compared against the observed test statistic $T_{obs}$= |winter average − summer average| from the original data frame. If $T_{perm}$ is greater than $T_{obs}$, a one is recorded, and after the 1000 permutations, the mean of these Boolean values is taken which is the estimated p-value $\hat{p}$. For a given significance level $\alpha$, if $\hat{p}$ is less than this value we reject the null hypothesis in favour of the alternative hypothesis and, if it is greater, we fail to reject the null hypothesis.  
+
+We can see from the permutation test that the number of successes, i.e number of $T_{perm}>T_{obs}$, follows a binomial distribution $X \sim \text{Bin}(N, p)$, for some unknown $p$ and the number of permutations $N$. In the permutation test analysis, we can approximate $p$ by $\hat{p} = \frac{x}{N}$, and hence by the properties of the binomial distribution approximate the Monte Carlo standard deviation as $sd(\hat{p}) = \sqrt{\frac{\hat{p}(1 - \hat{p})}{N}}$.  
+
+The function `permutation_test()`is used to approximate $\hat{p}$ and $sd(\hat{p})$ for a given station, and this can be used in a loop as shown below to approximate $\hat{p}$ and $sd(\hat{p})$ for each of the eight stations. The results were saved as .rsd files due to the high computational cost. 
+```{r eval=FALSE, echo=TRUE}
+p_values <- numeric(nrow(ghcnd_stations))
+SD_values <- numeric(nrow(ghcnd_stations))
+for (i in 1:nrow(ghcnd_stations)){
+  results <- permute_test(ghcnd_stations$ID[i], 1000)
+  p_values[i] <- results$p_value
+  SD_values[i] <- results$SD_value}
+p_values <-saveRDS(p_values, file = "data/p_values.rds")
+SD_values <-saveRDS(SD_values, file = "data/sd_values.rds")
+```
+The resulting data for each station is given in the following table:
+
+```{r eval=TRUE, echo=FALSE}
+p_values <-readRDS(file = "data/p_values.rds")
+SD_values <-readRDS(file = "data/sd_values.rds")
+knitr::kable(data.frame(ID = ghcnd_stations$ID, Name = ghcnd_stations$Name,
+                        P_values = p_values, SD_values = SD_values))
+```
+We can see that for six out of the eight stations $\hat{p}$ is zero, which means there is very strong evidence to reject the null hypothesis. If we assume $\alpha=0.05$, although the evidence isn't as strong, we can see that as 0.03<0.05, the null hypothesis is also rejected for the Leuchars station. For the Edinburgh: Royal Botanic Gardens station, we see that as 0.68>0.05, we fail to reject the null hypothesis.  
+
+The true differences between the average winter and summer precipitation values for each weather station are given below:
+```{r eval=TRUE,echo=TRUE}
+ 
+ghcnds <- ghcnds %>%
+  mutate(Summer = Month %in% c(4, 5, 6, 7, 8, 9))
+
+winter_averages <- ghcnds %>%
+  filter(Element == "PRCP", Season == "Winter") %>%
+  group_by(ID, Name) %>%
+  summarise(Winter_Average = mean(Value), .groups = "drop")
+
+summer_averages <- ghcnds %>%
+  filter(Element == "PRCP", Season == "Summer") %>%
+  group_by(ID, Name) %>%
+  summarise(Summer_Average = mean(Value), .groups = "drop")
+
+station_averages <- left_join(winter_averages, summer_averages, by = c("ID", "Name")) %>%
+  mutate(Average_Difference = abs(Winter_Average - Summer_Average))
+
+knitr::kable(station_averages)
+```
+It can be seen that the differences in average rainfall for the Leuchars and Edinburgh: Royal Botanic Gardens stations are significantly smaller than for the others, leading us to believe that the permutation test results are reasonable. 
+
+### Monte Carlo Permutation Test Approximated Confidence Intervals
+
+A 95% confidence interval is the range in which the true population parameter, in this case $p$, lies with 95% probability. In order to approximate a confidence for each $p$, we can use the fact that the number of randomized test statistics being more extreme than the observed test statistic is normally distributed, to approximate the confidence interval as, $CI_p=\hat{p} \pm z_{0.975}\sqrt{\frac{\hat{p}(1-\hat{p})}{N}} = \frac{x}{N} \pm z_{0.975}\sqrt{\frac{x(N-x)}{N^3}},$ where $x$ is the observed number of such randomized test statistics and $N$ the number of permutations. In the case that p=0, we use the fact that a test is rejected only if $P_X(X=0|p_0)=(1-p_0)^N < 0.025$ to approximate $CI_p$ as $CIp =(0, 1 − 0.025^{1/N}).$ The function `p_value_CI` takes 2 lists of the approximated p values and the sd values, as well as  number of permutations, to return a data frame displaying the lower and upper bounds of the approximated confidence interval for each p: 
+```{r eval=TRUE,echo=TRUE}
+knitr::kable(p_value_CI(p_values,SD_values,1000))
+```
+We can see that for all stations where $\hat{p}$ is less that 0.05, the upper limit of the approximated confidence interval is less that 0.05, and that for the Edinburgh: Royal Botanic gardens station where $\hat{p}$ is greater than 0.05, the lower limit is above 0.05. This is hence strong evidence that the conclusions drawn from our analysis of the approximated p values is correct, and there is strong evidence to suggest that the only station where there isn't more rain in winter than summer is the Edinburgh: Royal Botanic gardens station. 
+
+# Spatial weather prediction
+
+### Spatial Prediction Introduction
+
+In this section we analyse a model to estimate average rainfall per month. As the average monthly precipitation values are heavily skewed, we take the square root of each value, and the DecYear mean for each month . The code for this is shown below:
+```{r eval=TRUE, echo=TRUE}
+ghcnds_sr <- ghcnds %>%
+  filter(Element == "PRCP") %>%
+  group_by(ID, Name, Year, Month, Element, Longitude, Latitude, Elevation) %>%
+  summarise(Monthly_Average = mean(Value), .groups = "drop") %>%
+  mutate(Value_sqrt_avg = sqrt(Monthly_Average))
+
+DecYearAvg <- ghcnds %>%
+  filter(Element == "PRCP") %>%
+  group_by(Year, Month) %>%
+  summarise(DecYearAvg = mean(DecYear), .groups = "drop")
+
+ghcnds_sr <- ghcnds_sr %>%
+  left_join(DecYearAvg, by = c("Year", "Month"))
+```
+We define five models, $M_0$ to $M_5$, with $$M_0= \text{Value_sqrt_avg} \sim \text{Intercept} + \text{Longitude} + \text{Latitude} + \text{Elevation} + \text{DecYearAvg}$$ and, $$M_K=\text{Value_sqrt_avg} \sim \text{Intercept} + \text{Longitude} + \text{Latitude} + \text{Elevation} + \text{DecYearAvg} + \sum_{k=1}^{K} [\gamma_{c,k} \cos(2\pi kt) + \gamma_{s,k} \sin(2\pi kt)].$$ For each increase of $K$, we see the addition of two covariant trig terms, with frequency $k=1,2,...$. As these terms are added to the model, the model should capture increasingly complex seasonal variability. The time variable $t$ is taken to be the average DecYear per month so that the lowest frequency $k=1$ corresponds to a cosine function with a period of one year. 
+
+### Overview of Models and Results of Model Estimation
+
+The function `Model_Generator()` takes a value $K$ which dictates the quantity and frequency of the covariate terms and outputs the given model formula. To examine the coefficients for each of the five models, a loop was created to store the fitted models and their associated coefficients in two lists. The coefficients for each of the models are printed below:
+
+```{r eval=TRUE,echo=TRUE}
+model_coefficients <- list()
+models_fitted <- list()
+for (k in 0:4){
+  model_formula_k <- Model_Generator(k)
+  model_k <- lm(model_formula_k, data = ghcnds_sr)
+  model_coefficients[[k + 1]] <- coef(model_k)
+  models_fitted[[k + 1]] <- model_k
+}
+for (i in 1:length(model_coefficients)) {
+  cat("Model M", i - 1, "Coefficients:\n")
+  print(model_coefficients[[i]])
+}  
+```
+In order assess the models, we can examine the $R^2$ values. An $R^2$ value ranges from 0 to 1 and gives an indication of the fraction of variance that is in the dependent variable. Generally speaking, the higher the $R^2$ value, the better the model fits the given data. This does however not always serve as a good indicator if, for example, there exists high variability of the noise.
+
+The $R^2$ value for each model is presented below:
+
+```{r eval=TRUE,echo=TRUE}
+models_r_squared <- numeric(length(models_fitted)) 
+for (i in 1:length(models_fitted)) {
+  model <- models_fitted[[i]]
+  models_r_squared[i] <- summary(model)$r.squared
+}
+model_names <- c("M0", "M1", "M2", "M3", "M4")
+r_squared_df <- data.frame(Model = model_names, R_squared = models_r_squared)
+knitr::kable(r_squared_df )
+```
+We see that while there is a large difference between $M_0$ and $M_1$, the $R^2$ values for other models are broadly similar. As $M_4$ has the highest value, we can say there is a good chance it best fits the data. If we were to increase the value of $K$, we would expect the model to better fit the data, but we would have to be increasingly wary of overfitting, which would limit the model's ability to predict unseen values. 
+
+An important assumption of a liner regression model is that the residuals are normally distributed. In order to assess this, a Q-Q plot was conducted for the $M_4$ model, showing the residuals plotted against a diagonal line representing the theoretical normal distribution.
+
+```{r eval=TRUE,echo=TRUE}
+residuals <- resid(models_fitted[[5]])
+qqnorm(residuals)
+qqline(residuals)
+```
+
+We can see that although the tails are slightly heavy, the residuals follow a largely normal distribution, and this condition is indeed satisfied.
+
+### Stratified Cross-Validation
+ 
+In this section we test how well each model predicts precipitation for different locations. In order to do this, we will compute two score values for each precipitation measurement for each model, and aggregate to the 12 months of the year. The two computed scores are the standard error and Dawid-Sebastiani scores.
+We define the standard error scores as $\frac{\sum_{i=1}^{n} (y_i - \hat{y}_i)^2}{n}$ for sample size $n$, observed value $y_i$ and predicted value $\hat{y}_i$ and the Dawid-Sebastiani scores as $\sum_{i=1}^{n} \left(\frac{(y_i - \hat{y}_i)^2}{\sigma_i^2} + \log(\sigma_i^2)\right)$, for prediction standard deviation $\sigma_i$. While both scores are examples of proper scores as both satisfy the property $S(F, G) \geq S(G, G)$ for the true distribution $G$ and predicted distribution $F$, only the Dawid-Sebastiani score is strictly proper, as only for the Dawid-Sebastiani scores does a unique forecast $F$ maximize the expected scores. 
+As the Dawid-Sebastiani also accounts for the prediction standard deviation, it is often the better method of scoring. In both cases, the lower the score, the better the forecasting model. 
+
+In order to compute these scores, we use the `cross_validated_scores` function. The function works by taking the given data and looping through all the station IDs, leaving one out each time to fit each model, and then using that model to predict the squared average precipitation values for measurements with the excluded ID. This is then used to compute the prediction standard deviations and expected values to compute the score values. A loop is created to compute these values for all models and this data frame is then aggregate to the 12 months of the year. 
+```{r eval=TRUE,echo=TRUE}
+all_results <- data.frame()
+for (k in 0:4) {
+  model_formula <- Model_Generator(k)
+  current_results <- cross_validated_scores(ghcnds_sr, model_formula)
+  current_results$model <- k
+  all_results <- rbind(all_results, current_results)
+}
+monthly_average <- aggregate(cbind(SE, DS) ~ Name + Month + model, data = all_results, FUN = mean)
+```
+In order to plot the results, we create a new data frame to index the score results as being either standard error or Dawid-Sebastiani scores. 
+```{r eval=TRUE,echo=TRUE}
+monthly_average_indexed <- monthly_average %>%
+  gather(key = key, value = value, DS, SE)
+```
+If we average over all stations and set the x axis to be in months, we get the following plot:
+```{r eval=TRUE,echo=FALSE}
+ggplot(monthly_average_indexed, aes(x = Month, y = value, fill = as.factor(model))) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Average DS and SE by Month and Model",
+       x = "Month",
+       y = "Value",
+       fill = "Model") +
+  facet_wrap(~ key, scales = "free_y", ncol = 1, labeller = as_labeller(c(DS = "Dawid-Sebastiani", SE = "Squared Error"))) 
+```
+
+
+We see that in general the $M_0$ model appears to preform better in terms of the Dawid-Sebastiani and standard error scores in the summer months, while the other models tend to preform better in winter, with relatively little difference between $M_1$-$M_4$. This could be down to a number of reasons, including the fact that the weather is perhaps less variable in the summer months or that the models with more covariate terms suffer from overfitting.  
+
+To see if the models are more accurate at predicting weather data for certain stations, we average the data by weather station across all months, to produce the following bar chart. We again index the data frame to set the scores as being either standard error or Dawid-Sebastiani.
+
+```{r eval=TRUE,echo=TRUE}
+station_average <- aggregate(cbind(SE, DS) ~ Name + model, data = all_results, FUN = mean)
+
+station_average_indexed <-station_average %>%
+  gather(key = key, value = value, DS, SE)
+```
+```{r eval=TRUE,echo=FALSE}
+ggplot(station_average_indexed, aes(x = Name, y = value, fill = as.factor(model))) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~ key, ncol = 1, scales = "free_y") +
+  labs(title = "Average DS and SE by Station and Model",
+       x = "Station",
+       y = "Value",
+       fill = "Model") +theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
+```
+
+
+
+
+
+We see here that the scores for the $M_0$ model are generally worse than the others, with the exception of the Leuchars station, while the scores between the other models are broadly similar. We also see from the Dawid-Sebastiani and standard error scores that the models are worst at predicting the precipitation data for the Benmore: Younger Botamnic Gardens station. The models are almost equally accurate at predicting data for the the other stations, with the scores for the Ardtailnaig and Leuchars stations being slightly higher than the others. It can be seen that the stations which provide the worst scores tend to be relatively low in altitude, which is something that could be explored to improve the model further. 
+
+# Code appendix
+
+
+## Function definitions
+
+```{r code=readLines("functions.R"), eval=FALSE, echo=TRUE}
+# Do not change this code chunk
+```
